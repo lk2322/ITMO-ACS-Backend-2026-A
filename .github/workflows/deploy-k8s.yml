@@ -1,0 +1,196 @@
+# ДЗ8: CI/CD для облачной инфраструктуры.
+#
+# Пайплайн состоит из двух частей:
+#   CI  — проверка кода всех микросервисов на раннерах GitHub;
+#   CD  — сборка образов, выкатка в кластер k3s и проверка результата
+#         на self-hosted runner'е, установленном на сервере (ДЗ6).
+#
+# Образы тегируются коротким SHA коммита, а не latest: по тегу видно,
+# какая именно версия работает в кластере, и возможен откат.
+
+name: CI/CD rental-app (Kubernetes)
+
+on:
+  push:
+    branches: [lab-8]
+    paths:
+      - 'БР1.2/Владзиевский Евгений/labs/lab2/**'
+      - 'БР1.2/Владзиевский Евгений/labs/lab7/k8s/**'
+      - '.github/workflows/deploy-k8s.yml'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Тег образов для выкатки (по умолчанию — SHA коммита)'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-k8s-rental
+  cancel-in-progress: false
+
+env:
+  SRC_DIR: БР1.2/Владзиевский Евгений/labs/lab2
+  K8S_DIR: БР1.2/Владзиевский Евгений/labs/lab7/k8s
+  NAMESPACE: rental
+  KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+jobs:
+  # ── CI ─────────────────────────────────────────────────────────────────────
+  check:
+    name: Проверка кода (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - api-gateway
+          - auth-service
+          - property-service
+          - booking-service
+          - payment-service
+          - messaging-service
+    steps:
+      - name: Получение кода
+        uses: actions/checkout@v5
+
+      - name: Установка Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'БР1.2/Владзиевский Евгений/labs/lab2/${{ matrix.service }}/go.mod'
+          cache-dependency-path: 'БР1.2/Владзиевский Евгений/labs/lab2/${{ matrix.service }}/go.sum'
+
+      - name: go vet
+        working-directory: 'БР1.2/Владзиевский Евгений/labs/lab2/${{ matrix.service }}'
+        run: go vet ./...
+
+      - name: Сборка
+        working-directory: 'БР1.2/Владзиевский Евгений/labs/lab2/${{ matrix.service }}'
+        run: go build ./...
+
+      - name: Тесты
+        working-directory: 'БР1.2/Владзиевский Евгений/labs/lab2/${{ matrix.service }}'
+        run: go test ./...
+
+  # ── CD ─────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Выкатка в кластер
+    needs: check
+    runs-on: [self-hosted, rental-server]
+    timeout-minutes: 30
+    steps:
+      - name: Получение кода
+        uses: actions/checkout@v5
+
+      - name: Определение тега образов
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          [ -n "$TAG" ] || TAG="$(git rev-parse --short HEAD)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Выкатываем тег $TAG"
+
+      - name: Сборка образов микросервисов
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          for svc in api-gateway auth-service property-service \
+                     booking-service payment-service messaging-service; do
+            echo "::group::сборка $svc"
+            sudo docker build -q -t "rental/${svc}:${TAG}" "${SRC_DIR}/${svc}"
+            echo "::endgroup::"
+          done
+
+      - name: Импорт образов в containerd кластера
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          for svc in api-gateway auth-service property-service \
+                     booking-service payment-service messaging-service; do
+            sudo docker save "rental/${svc}:${TAG}" | sudo k3s ctr images import -
+          done
+
+      - name: Подстановка тега в kustomization
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          sed -i "s/newTag: .*/newTag: ${TAG}/" "${K8S_DIR}/kustomization.yaml"
+          grep -A1 'name: rental/' "${K8S_DIR}/kustomization.yaml" | head -6
+
+      - name: Сохранение текущих ревизий (для отката)
+        id: before
+        run: |
+          for dep in auth-service property-service booking-service \
+                     payment-service messaging-service api-gateway; do
+            rev=$(kubectl -n "${NAMESPACE}" get deployment "$dep" \
+                  -o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}' 2>/dev/null || echo "")
+            echo "  $dep: ревизия ${rev:-нет}"
+          done
+
+      - name: Применение манифестов
+        run: |
+          kubectl apply -k "${K8S_DIR}"
+
+      - name: Ожидание выкатки
+        id: rollout
+        run: |
+          for dep in auth-service property-service booking-service \
+                     payment-service messaging-service api-gateway; do
+            kubectl -n "${NAMESPACE}" rollout status "deployment/${dep}" --timeout=180s
+          done
+
+      - name: Smoke-тест через Ingress
+        id: smoke
+        run: |
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://192.168.1.245/health || true)
+            [ "$code" = "200" ] && { echo "health: 200 (попытка $i)"; break; }
+            echo "health: $code, ждём ($i/20)"; sleep 5
+          done
+          [ "$code" = "200" ] || { echo "::error::приложение не отвечает"; exit 1; }
+
+          auth=$(curl -s -o /dev/null -w '%{http_code}' http://192.168.1.245/api/v1/users/me)
+          echo "запрос без токена: $auth"
+          [ "$auth" = "401" ] || { echo "::error::ожидался 401, получен $auth"; exit 1; }
+
+          reg=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://192.168.1.245/api/v1/auth/login \
+                -H 'Content-Type: application/json' -d '{"email":"nobody@example.com","password":"wrong"}')
+          echo "вход с неверным паролем: $reg"
+          [ "$reg" = "401" ] || [ "$reg" = "400" ] || { echo "::error::неожиданный ответ $reg"; exit 1; }
+
+      - name: Откат при неудаче
+        if: failure() && steps.rollout.outcome != 'skipped'
+        run: |
+          echo "::warning::выкатка или проверка не прошли — откатываемся"
+          for dep in auth-service property-service booking-service \
+                     payment-service messaging-service api-gateway; do
+            kubectl -n "${NAMESPACE}" rollout undo "deployment/${dep}" || true
+          done
+          for dep in auth-service property-service booking-service \
+                     payment-service messaging-service api-gateway; do
+            kubectl -n "${NAMESPACE}" rollout status "deployment/${dep}" --timeout=120s || true
+          done
+          curl -s -o /dev/null -w 'после отката health=%{http_code}\n' http://192.168.1.245/health
+
+      - name: Состояние кластера
+        if: always()
+        run: |
+          kubectl -n "${NAMESPACE}" get pods -o wide
+          echo "--- выкаченные образы ---"
+          kubectl -n "${NAMESPACE}" get deployments \
+            -o custom-columns='DEPLOYMENT:.metadata.name,IMAGE:.spec.template.spec.containers[0].image'
+
+      - name: Логи при ошибке
+        if: failure()
+        run: |
+          kubectl -n "${NAMESPACE}" get events --sort-by=.lastTimestamp | tail -20
+          for dep in api-gateway auth-service; do
+            echo "::group::логи $dep"
+            kubectl -n "${NAMESPACE}" logs "deployment/${dep}" --tail=40 || true
+            echo "::endgroup::"
+          done
+
+      - name: Удаление старых образов
+        if: always()
+        run: |
+          # на узле остаются образы прошлых сборок: чистим всё, кроме трёх последних тегов
+          sudo docker image prune -f >/dev/null 2>&1 || true
+          sudo docker images 'rental/*' --format '{{.Repository}}:{{.Tag}}' | tail -n +19 | \
+            xargs -r -n1 sudo docker rmi -f >/dev/null 2>&1 || true
+          sudo docker images 'rental/*' --format '{{.Repository}}:{{.Tag}}' | wc -l

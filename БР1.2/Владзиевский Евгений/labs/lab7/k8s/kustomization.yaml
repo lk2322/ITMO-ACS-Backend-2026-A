@@ -31,3 +31,20 @@ labels:
   - pairs:
       app.kubernetes.io/part-of: rental-app
     includeSelectors: false
+
+# Теги образов. В репозитории здесь latest, а пайплайн ДЗ8 подставляет
+# сюда короткий SHA коммита: так видно, какая именно версия выкачена,
+# и возможен откат на предыдущий тег.
+images:
+  - name: rental/api-gateway
+    newTag: latest
+  - name: rental/auth-service
+    newTag: latest
+  - name: rental/property-service
+    newTag: latest
+  - name: rental/booking-service
+    newTag: latest
+  - name: rental/payment-service
+    newTag: latest
+  - name: rental/messaging-service
+    newTag: latest
