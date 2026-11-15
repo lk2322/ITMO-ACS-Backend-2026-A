@@ -16,6 +16,7 @@ on:
     paths:
       - 'БР1.2/Владзиевский Евгений/labs/lab2/**'
       - 'БР1.2/Владзиевский Евгений/labs/lab7/k8s/**'
+      - 'БР1.2/Владзиевский Евгений/homeworks/hw9/**'
       - '.github/workflows/deploy-k8s.yml'
   workflow_dispatch:
     inputs:
@@ -31,6 +32,7 @@ concurrency:
 env:
   SRC_DIR: БР1.2/Владзиевский Евгений/labs/lab2
   K8S_DIR: БР1.2/Владзиевский Евгений/labs/lab7/k8s
+  DOCS_DIR: БР1.2/Владзиевский Евгений/homeworks/hw9
   NAMESPACE: rental
   KUBECONFIG: /etc/rancher/k3s/k3s.yaml
 
@@ -99,6 +101,14 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Сборка сайта документации
+        run: |
+          # MkDocs собирается в статику и раздаётся nginx; спецификация
+          # OpenAPI попадает в образ из каталога openapi/
+          sudo docker build -q -t rental/docs:latest \
+            -f "${DOCS_DIR}/mkdocs/Dockerfile" "${DOCS_DIR}"
+          sudo docker save rental/docs:latest | sudo k3s ctr images import -
+
       - name: Импорт образов в containerd кластера
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
@@ -128,6 +138,12 @@ jobs:
       - name: Применение манифестов
         run: |
           kubectl apply -k "${K8S_DIR}"
+
+      - name: Обновление сайта документации
+        run: |
+          # образ документации всегда latest, поэтому под пересоздаётся явно
+          kubectl -n "${NAMESPACE}" rollout restart deployment/docs
+          kubectl -n "${NAMESPACE}" rollout status deployment/docs --timeout=120s
 
       - name: Ожидание выкатки
         id: rollout

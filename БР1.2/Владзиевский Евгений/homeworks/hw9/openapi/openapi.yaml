@@ -1,0 +1,867 @@
+openapi: 3.0.3
+
+info:
+  title: Rental Property API
+  version: "1.0.0"
+  description: |
+    API сервиса аренды недвижимости.
+
+    Приложение состоит из шести микросервисов, но наружу смотрит только
+    API Gateway: он проверяет JWT, определяет роль пользователя и
+    проксирует запрос нужному сервису. Поэтому спецификация описывает
+    публичный контракт шлюза, а не внутренние вызовы между сервисами.
+
+    **Роли:** `tenant` (арендатор), `owner` (владелец), `admin`.
+    Роль выдаётся при регистрации и хранится в JWT.
+  contact:
+    name: Владзиевский Евгений, БР1.2
+
+servers:
+  - url: http://192.168.1.245/api/v1
+    description: Кластер k3s (ЛР7)
+  - url: http://localhost:8080/api/v1
+    description: Локальный запуск через Docker Compose
+
+tags:
+  - name: Аутентификация
+    description: Регистрация, вход и профиль пользователя
+  - name: Справочники
+    description: Типы недвижимости и удобства
+  - name: Объекты
+    description: Каталог объектов недвижимости и фотографии
+  - name: Аренда
+    description: Бронирования и оплата
+  - name: Сообщения
+    description: Переписка между арендатором и владельцем
+  - name: Транзакции
+    description: История платежей
+  - name: Служебное
+    description: Проверка состояния
+
+paths:
+  /health:
+    get:
+      tags: [Служебное]
+      summary: Проверка доступности шлюза
+      description: |
+        Эндпоинт находится вне префикса `/api/v1` — полный путь
+        `http://192.168.1.245/health`. Используется пробами Kubernetes
+        и мониторингом (ЛР6).
+      security: []
+      responses:
+        "200":
+          description: Шлюз работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: api-gateway }
+
+  /auth/register:
+    post:
+      tags: [Аутентификация]
+      summary: Регистрация пользователя
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Пользователь создан, выданы токены
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409":
+          description: Email уже зарегистрирован
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /auth/login:
+    post:
+      tags: [Аутентификация]
+      summary: Вход
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: user@example.com }
+                password: { type: string, format: password, example: Passw0rd! }
+      responses:
+        "200":
+          description: Токены выданы
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        "401":
+          description: Неверные учётные данные
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /users/me:
+    get:
+      tags: [Аутентификация]
+      summary: Профиль текущего пользователя
+      responses:
+        "200":
+          description: Профиль
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Аутентификация]
+      summary: Обновление профиля
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name: { type: string, maxLength: 100 }
+                phone: { type: string, example: "+79990000000" }
+      responses:
+        "200":
+          description: Профиль обновлён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /users/{id}/role:
+    patch:
+      tags: [Аутентификация]
+      summary: Смена роли пользователя
+      description: Доступно только роли `admin`.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [tenant, owner, admin] }
+      responses:
+        "200":
+          description: Роль изменена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /property-types:
+    get:
+      tags: [Справочники]
+      summary: Список типов недвижимости
+      responses:
+        "200":
+          description: Типы недвижимости
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PropertyType" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Справочники]
+      summary: Добавить тип недвижимости
+      description: Доступно только роли `admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 50, example: Квартира }
+      responses:
+        "201":
+          description: Тип создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PropertyType" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /amenities:
+    get:
+      tags: [Справочники]
+      summary: Список удобств
+      responses:
+        "200":
+          description: Удобства
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Amenity" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Справочники]
+      summary: Добавить удобство
+      description: Доступно только роли `admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100, example: Wi-Fi }
+                icon: { type: string, nullable: true }
+                description: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Удобство создано
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Amenity" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /amenities/{id}:
+    delete:
+      tags: [Справочники]
+      summary: Удалить удобство
+      description: Доступно только роли `admin`.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      responses:
+        "204": { description: Удалено }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /properties:
+    get:
+      tags: [Объекты]
+      summary: Поиск объектов с фильтрацией
+      parameters:
+        - { name: city, in: query, schema: { type: string }, description: Город }
+        - { name: type_id, in: query, schema: { type: integer }, description: Тип недвижимости }
+        - { name: min_price, in: query, schema: { type: number }, description: Минимальная цена за сутки }
+        - { name: max_price, in: query, schema: { type: number }, description: Максимальная цена за сутки }
+        - { name: start_date, in: query, schema: { type: string, format: date }, description: Начало периода (свободен с) }
+        - { name: end_date, in: query, schema: { type: string, format: date }, description: Конец периода (свободен по) }
+        - { name: owner_id, in: query, schema: { type: integer }, description: Объекты конкретного владельца }
+        - { name: limit, in: query, schema: { type: integer, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        "200":
+          description: Найденные объекты
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer, example: 2 }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Property" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Объекты]
+      summary: Создать объект
+      description: |
+        Доступно ролям `owner` и `admin`.
+
+        Из-за вложенной группы маршрутов в API Gateway канонический путь —
+        `/properties/` с завершающим слэшем: запрос на `/properties`
+        получает `307 Temporary Redirect`. Клиенты, следующие редиректам
+        (Postman, браузер, `curl -L`), сохраняют метод и тело запроса.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePropertyRequest" }
+      responses:
+        "201":
+          description: Объект создан
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Property" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /properties/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [Объекты]
+      summary: Карточка объекта
+      responses:
+        "200":
+          description: Объект
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Property" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Объекты]
+      summary: Обновить объект
+      description: Доступно владельцу объекта и роли `admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePropertyRequest" }
+      responses:
+        "200":
+          description: Объект обновлён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Property" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Объекты]
+      summary: Удалить объект
+      description: Доступно владельцу объекта и роли `admin`.
+      responses:
+        "204": { description: Удалён }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /properties/{id}/status:
+    patch:
+      tags: [Объекты]
+      summary: Изменить статус объекта
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [active, archived] }
+      responses:
+        "200":
+          description: Статус изменён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Property" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /properties/{id}/images:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [Объекты]
+      summary: Фотографии объекта
+      responses:
+        "200":
+          description: Список фотографий
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PropertyImage" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Объекты]
+      summary: Загрузить фотографию
+      description: |
+        Multipart-загрузка. Ограничения заданы в property-service:
+        до 10 МБ, типы `image/jpeg`, `image/png`, `image/gif`.
+        Тот же лимит продублирован в Ingress.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image: { type: string, format: binary }
+                is_main: { type: boolean, default: false }
+      responses:
+        "201":
+          description: Фотография загружена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PropertyImage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413":
+          description: Файл больше 10 МБ
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /properties/property-images/{imageId}:
+    parameters:
+      - { name: imageId, in: path, required: true, schema: { type: integer } }
+    patch:
+      tags: [Объекты]
+      summary: Сделать фотографию главной
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                is_main: { type: boolean }
+      responses:
+        "200":
+          description: Фотография обновлена
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PropertyImage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Объекты]
+      summary: Удалить фотографию
+      responses:
+        "204": { description: Удалена }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /rentals:
+    get:
+      tags: [Аренда]
+      summary: История аренд пользователя
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, confirmed, paid, payment_pending, cancelled, finished] } }
+      responses:
+        "200":
+          description: Аренды пользователя
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Rental" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Аренда]
+      summary: Забронировать объект
+      description: Доступно роли `tenant`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [property_id, start_date, end_date]
+              properties:
+                property_id: { type: integer, example: 1 }
+                start_date: { type: string, format: date-time, example: "2026-12-01T00:00:00Z" }
+                end_date: { type: string, format: date-time, example: "2026-12-07T00:00:00Z" }
+      responses:
+        "201":
+          description: Бронирование создано
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rental" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "404":
+          description: Объект не найден или недоступен для бронирования
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Даты пересекаются с существующим бронированием
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /rentals/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IdParam"
+    get:
+      tags: [Аренда]
+      summary: Карточка аренды
+      responses:
+        "200":
+          description: Аренда
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rental" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Аренда]
+      summary: Изменить статус аренды
+      description: |
+        Допустимы только переходы по схеме:
+
+        | Из | В |
+        |---|---|
+        | `pending` | `confirmed`, `cancelled` |
+        | `confirmed` | `paid`, `payment_pending`, `cancelled` |
+        | `payment_pending` | `paid`, `cancelled` |
+        | `paid` | `finished` |
+        | `cancelled`, `finished` | переходы запрещены |
+
+        Запрос на недопустимый переход возвращает `400` с сообщением
+        `invalid status transition from X to Y`. Подтверждает бронь
+        владелец объекта: `pending` → `confirmed`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [pending, confirmed, paid, cancelled, finished] }
+      responses:
+        "200":
+          description: Статус изменён
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Rental" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /rentals/{id}/pay:
+    post:
+      tags: [Аренда]
+      summary: Оплатить аренду
+      description: |
+        Запускает сагу оплаты: booking-service создаёт платёж в
+        payment-service, при успехе переводит аренду в статус `paid` и
+        публикует событие `rental.status_changed` через outbox.
+        Поле `idempotency_key` защищает от повторного списания при
+        повторе запроса.
+
+        **Предусловия:**
+
+        * платит только арендатор этой аренды (иначе `400`
+          `only the tenant can pay for a rental`);
+        * аренда должна быть в статусе `confirmed` — то есть владелец
+          уже подтвердил бронь. Оплата из `pending` возвращает `400`
+          `rental cannot be paid in status pending, expected confirmed`.
+      parameters:
+        - $ref: "#/components/parameters/IdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_method]
+              properties:
+                payment_method: { type: string, example: card }
+                idempotency_key: { type: string, example: "rental-1-attempt-1" }
+      responses:
+        "200":
+          description: Оплата прошла
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rental: { $ref: "#/components/schemas/Rental" }
+                  transaction: { $ref: "#/components/schemas/Transaction" }
+        "400":
+          description: Оплата не прошла или аренда в неподходящем статусе
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /messages:
+    post:
+      tags: [Сообщения]
+      summary: Отправить сообщение
+      description: |
+        Переписка привязана к объекту: писать друг другу могут только
+        арендатор и владелец, между которыми есть аренда этого объекта
+        в статусе `confirmed`, `paid` или `payment_pending`.
+
+        Если такой аренды нет (например, бронь ещё в статусе `pending`),
+        сервис возвращает `403` с сообщением
+        `sender is not participating in rental of this property`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receiver_id, property_id, message_text]
+              properties:
+                receiver_id: { type: integer }
+                property_id: { type: integer }
+                message_text: { type: string, maxLength: 2000 }
+      responses:
+        "201":
+          description: Сообщение отправлено
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Между пользователями нет подходящей аренды этого объекта
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /messages/conversations:
+    get:
+      tags: [Сообщения]
+      summary: Список диалогов пользователя
+      responses:
+        "200":
+          description: Диалоги
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    property_id: { type: integer }
+                    interlocutor_id: { type: integer }
+                    last_message: { type: string }
+                    last_message_at: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /messages/property/{propertyId}/user/{userId}:
+    get:
+      tags: [Сообщения]
+      summary: Переписка по объекту с конкретным пользователем
+      description: |
+        Действует то же правило, что и для отправки: нужна аренда этого
+        объекта между двумя пользователями в статусе `confirmed`, `paid`
+        или `payment_pending`.
+      parameters:
+        - { name: propertyId, in: path, required: true, schema: { type: integer } }
+        - { name: userId, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Сообщения диалога
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Message" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Между пользователями нет подходящей аренды этого объекта
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /transactions:
+    get:
+      tags: [Транзакции]
+      summary: История платежей пользователя
+      responses:
+        "200":
+          description: Транзакции
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Transaction" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access-токен из `/auth/login` или `/auth/register`.
+        Срок жизни — 24 часа, refresh-токена — 7 суток.
+
+  parameters:
+    IdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+
+  responses:
+    ValidationError:
+      description: Ошибка валидации тела запроса
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: "Key: 'CreateRentalInput.PropertyID' Error:Field validation for 'PropertyID' failed on the 'required' tag"
+    Unauthorized:
+      description: Токен отсутствует, истёк или недействителен
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Роль пользователя не допускает эту операцию
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string, example: "описание ошибки" }
+
+    RegisterRequest:
+      type: object
+      required: [email, password, full_name]
+      properties:
+        email: { type: string, format: email, example: user@example.com }
+        password: { type: string, minLength: 6, example: Passw0rd! }
+        full_name: { type: string, maxLength: 100, example: Иван Иванов }
+        phone: { type: string, nullable: true, example: "+79990000000" }
+        role: { type: string, enum: [tenant, owner], default: tenant }
+
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        email: { type: string, format: email }
+        full_name: { type: string }
+        phone: { type: string, nullable: true }
+        role: { type: string, enum: [tenant, owner, admin] }
+        created_at: { type: string, format: date-time }
+
+    PropertyType:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Квартира }
+
+    Amenity:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string, example: Wi-Fi }
+        icon: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+
+    CreatePropertyRequest:
+      type: object
+      required: [type_id, title, price_per_day, city, address]
+      properties:
+        type_id: { type: integer, example: 1 }
+        title: { type: string, maxLength: 255, example: Двушка у метро }
+        description: { type: string, nullable: true }
+        price_per_day: { type: number, minimum: 0.01, example: 3500 }
+        city: { type: string, maxLength: 100, example: Санкт-Петербург }
+        address: { type: string, example: Кронверкский проспект, 49 }
+        latitude: { type: number, nullable: true }
+        longitude: { type: number, nullable: true }
+        amenity_ids:
+          type: array
+          items: { type: integer }
+
+    Property:
+      type: object
+      properties:
+        id: { type: integer }
+        owner_id: { type: integer }
+        type_id: { type: integer }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        price_per_day: { type: number }
+        city: { type: string }
+        address: { type: string }
+        latitude: { type: number, nullable: true }
+        longitude: { type: number, nullable: true }
+        status: { type: string, enum: [active, archived] }
+        created_at: { type: string, format: date-time }
+        amenities:
+          type: array
+          items: { $ref: "#/components/schemas/Amenity" }
+        images:
+          type: array
+          items: { $ref: "#/components/schemas/PropertyImage" }
+
+    PropertyImage:
+      type: object
+      properties:
+        id: { type: integer }
+        property_id: { type: integer }
+        image_url: { type: string, example: /storage/20261115_flat.jpg }
+        is_main: { type: boolean }
+
+    Rental:
+      type: object
+      properties:
+        id: { type: integer }
+        tenant_id: { type: integer }
+        property_id: { type: integer }
+        owner_id: { type: integer }
+        start_date: { type: string, format: date-time }
+        end_date: { type: string, format: date-time }
+        total_price: { type: number, example: 21000 }
+        status:
+          type: string
+          enum: [pending, confirmed, paid, payment_pending, cancelled, finished]
+        created_at: { type: string, format: date-time }
+
+    Transaction:
+      type: object
+      properties:
+        id: { type: integer }
+        rental_id: { type: integer }
+        tenant_id: { type: integer }
+        amount: { type: number }
+        payment_method: { type: string, example: card }
+        idempotency_key: { type: string }
+        type: { type: string, enum: [payment, refund] }
+        status: { type: string, enum: [success, failed, pending, refunded] }
+        created_at: { type: string, format: date-time }
+
+    Message:
+      type: object
+      properties:
+        id: { type: integer }
+        sender_id: { type: integer }
+        receiver_id: { type: integer }
+        property_id: { type: integer }
+        message_text: { type: string }
+        sent_at: { type: string, format: date-time }
+
+security:
+  - bearerAuth: []

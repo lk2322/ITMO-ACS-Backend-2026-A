@@ -1,0 +1,58 @@
+# Сайт документации (ДЗ9): MkDocs собран в статику и раздаётся nginx.
+# Доступен через тот же Ingress по пути /docs.
+apiVersion: v1
+kind: Service
+metadata:
+  name: docs
+  namespace: rental
+  labels:
+    app: docs
+spec:
+  selector:
+    app: docs
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docs
+  namespace: rental
+  labels:
+    app: docs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docs
+  template:
+    metadata:
+      labels:
+        app: docs
+        app.kubernetes.io/component: docs
+    spec:
+      containers:
+        - name: docs
+          image: rental/docs:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi

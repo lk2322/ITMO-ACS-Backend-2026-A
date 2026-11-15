@@ -20,6 +20,7 @@ resources:
   - services/payment-service.yaml
   - services/messaging-service.yaml
   - services/api-gateway.yaml
+  - services/docs.yaml
   - monitoring/grafana-external.yaml
   - ingress.yaml
 

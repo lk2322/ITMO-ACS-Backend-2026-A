@@ -1,0 +1,50 @@
+site_name: Rental Property — документация
+site_description: Микросервисное приложение для аренды недвижимости
+site_author: Владзиевский Евгений, БР1.2
+docs_dir: docs
+use_directory_urls: true
+
+theme:
+  name: material
+  language: ru
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Тёмная тема
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Светлая тема
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Обзор: index.md
+  - Архитектура: architecture.md
+  - Справочник API: api.md
+  - Тестирование в Postman: postman.md
+  - Развёртывание: deployment.md
+  - Мониторинг: monitoring.md
+  - Эксплуатация: operations.md

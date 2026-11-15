@@ -21,6 +21,14 @@ spec:
                 name: grafana-external
                 port:
                   number: 3000
+          # сайт документации (ДЗ9)
+          - path: /docs
+            pathType: Prefix
+            backend:
+              service:
+                name: docs
+                port:
+                  number: 80
           # всё остальное обслуживает API Gateway
           - path: /
             pathType: Prefix
