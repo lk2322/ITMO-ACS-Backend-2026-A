@@ -106,6 +106,13 @@ spec:
                 secretKeyRef:
                   name: rental-secrets
                   key: SERVICE_TOKEN
+            # Сервис проверяет JWT самостоятельно (utils.ValidateToken),
+            # поэтому ему нужен тот же ключ, которым подписывает auth-service
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: rental-secrets
+                  key: JWT_SECRET
           startupProbe:
             httpGet:
               path: /health

@@ -152,6 +152,8 @@ services:
       SERVER_HOST: 0.0.0.0
       AUTH_SERVICE_URL: http://auth-service:8081
       SERVICE_TOKEN: ${SERVICE_TOKEN}
+      # сервис сам проверяет JWT, ключ должен совпадать с auth-service
+      JWT_SECRET: ${JWT_SECRET}
       UPLOAD_DIR: ./storage
       MAX_UPLOAD_SIZE: "10485760"
       ALLOWED_IMAGE_TYPES: "image/jpeg,image/png,image/gif"
@@ -209,6 +211,8 @@ services:
       DB_SSLMODE: disable
       SERVER_PORT: 8084
       SERVER_HOST: 0.0.0.0
+      # сервис сам проверяет JWT, ключ должен совпадать с auth-service
+      JWT_SECRET: ${JWT_SECRET}
       BOOKING_SERVICE_URL: http://booking-service:8083
       SERVICE_TOKEN: ${SERVICE_TOKEN}
       KAFKA_BROKERS: kafka:9092
