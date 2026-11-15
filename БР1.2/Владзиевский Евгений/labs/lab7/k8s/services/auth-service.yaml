@@ -51,7 +51,7 @@ spec:
             - name: SERVER_PORT
               value: "8081"
             - name: DB_HOST
-              value: auth-db-wrong-host
+              value: auth-db
             - name: DB_USER
               value: auth
             - name: DB_NAME
