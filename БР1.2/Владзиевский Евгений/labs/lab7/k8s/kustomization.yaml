@@ -37,14 +37,14 @@ labels:
 # и возможен откат на предыдущий тег.
 images:
   - name: rental/api-gateway
-    newTag: latest
+    newTag: "latest"
   - name: rental/auth-service
-    newTag: latest
+    newTag: "latest"
   - name: rental/property-service
-    newTag: latest
+    newTag: "latest"
   - name: rental/booking-service
-    newTag: latest
+    newTag: "latest"
   - name: rental/payment-service
-    newTag: latest
+    newTag: "latest"
   - name: rental/messaging-service
-    newTag: latest
+    newTag: "latest"

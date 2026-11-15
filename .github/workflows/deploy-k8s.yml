@@ -110,7 +110,9 @@ jobs:
       - name: Подстановка тега в kustomization
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          sed -i "s/newTag: .*/newTag: ${TAG}/" "${K8S_DIR}/kustomization.yaml"
+          # тег обязательно в кавычках: SHA из одних цифр (например 5670863)
+          # иначе разбирается как число, и kustomize падает с ошибкой типа
+          sed -i "s/newTag: .*/newTag: \"${TAG}\"/" "${K8S_DIR}/kustomization.yaml"
           grep -A1 'name: rental/' "${K8S_DIR}/kustomization.yaml" | head -6
 
       - name: Сохранение текущих ревизий (для отката)
