@@ -10,5 +10,7 @@ COPY openapi/openapi.yaml ./docs/openapi.yaml
 RUN mkdocs build --strict --site-dir /site
 
 FROM nginx:alpine
-COPY --from=build /site /usr/share/nginx/html
+# Ingress отдаёт путь вместе с префиксом /docs, поэтому сайт кладётся
+# в соответствующий подкаталог — иначе nginx ищет /docs/index.html и не находит
+COPY --from=build /site /usr/share/nginx/html/docs
 EXPOSE 80

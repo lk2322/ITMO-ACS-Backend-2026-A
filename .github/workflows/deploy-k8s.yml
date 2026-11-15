@@ -163,14 +163,29 @@ jobs:
           done
           [ "$code" = "200" ] || { echo "::error::приложение не отвечает"; exit 1; }
 
-          auth=$(curl -s -o /dev/null -w '%{http_code}' http://192.168.1.245/api/v1/users/me)
-          echo "запрос без токена: $auth"
-          [ "$auth" = "401" ] || { echo "::error::ожидался 401, получен $auth"; exit 1; }
+          # проверки повторяются: сразу после выкатки Ingress может успеть
+          # отправить запрос в под, который ещё не исключён из эндпоинтов
+          check() {
+            local name="$1" expected="$2"; shift 2
+            local code=""
+            for i in $(seq 1 10); do
+              code=$("$@")
+              case " $expected " in *" $code "*) echo "$name: $code"; return 0;; esac
+              echo "$name: $code, повтор ($i/10)"; sleep 3
+            done
+            echo "::error::$name — получен $code, ожидалось: $expected"
+            return 1
+          }
 
-          reg=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://192.168.1.245/api/v1/auth/login \
-                -H 'Content-Type: application/json' -d '{"email":"nobody@example.com","password":"wrong"}')
-          echo "вход с неверным паролем: $reg"
-          [ "$reg" = "401" ] || [ "$reg" = "400" ] || { echo "::error::неожиданный ответ $reg"; exit 1; }
+          check "запрос без токена" "401" \
+            curl -s -o /dev/null -w '%{http_code}' http://192.168.1.245/api/v1/users/me
+
+          check "вход с неверным паролем" "400 401" \
+            curl -s -o /dev/null -w '%{http_code}' -X POST http://192.168.1.245/api/v1/auth/login \
+              -H 'Content-Type: application/json' -d '{"email":"nobody@example.com","password":"wrong"}'
+
+          check "сайт документации" "200" \
+            curl -s -o /dev/null -w '%{http_code}' http://192.168.1.245/docs/
 
       - name: Откат при неудаче
         if: failure() && steps.rollout.outcome != 'skipped'
